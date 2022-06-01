@@ -413,6 +413,28 @@ func (f boolPtrFlag) Set(s string) error {
 	return nil
 }
 
+func unmarshalTarget(dc *downstreamConn, target string) (string, *network, error) {
+	if dc.network != nil {
+		return target, dc.network, nil
+	}
+
+	i := strings.LastIndexByte(target, '/')
+	if i < 0 {
+		return "", nil, fmt.Errorf("missing network suffix in name")
+	}
+
+	networkName := target[i+1:]
+	target = target[:i]
+
+	for _, network := range dc.user.networks {
+		if networkName == network.GetName() {
+			return target, network, nil
+		}
+	}
+
+	return "", nil, fmt.Errorf("no such network %q", networkName)
+}
+
 func getNetworkFromArg(dc *downstreamConn, params []string) (*network, []string, error) {
 	name, params := popArg(params)
 	if name == "" {
@@ -1103,12 +1125,12 @@ func handleServiceChannelUpdate(ctx context.Context, dc *downstreamConn, params 
 		return err
 	}
 
-	uc, upstreamName, err := dc.unmarshalEntity(name)
+	name, network, err := unmarshalTarget(dc, name)
 	if err != nil {
-		return fmt.Errorf("unknown channel %q", name)
+		return err
 	}
 
-	ch := uc.network.channels.Get(upstreamName)
+	ch := network.channels.Get(name)
 	if ch == nil {
 		return fmt.Errorf("unknown channel %q", name)
 	}
@@ -1117,9 +1139,11 @@ func handleServiceChannelUpdate(ctx context.Context, dc *downstreamConn, params 
 		return err
 	}
 
-	uc.updateChannelAutoDetach(upstreamName)
+	if uc := network.conn; uc != nil {
+		uc.updateChannelAutoDetach(name)
+	}
 
-	if err := dc.srv.db.StoreChannel(ctx, uc.network.ID, ch); err != nil {
+	if err := dc.srv.db.StoreChannel(ctx, network.ID, ch); err != nil {
 		return fmt.Errorf("failed to update channel: %v", err)
 	}
 

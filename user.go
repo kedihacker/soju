@@ -159,7 +159,7 @@ func newNetwork(user *user, record *database.Network, channels []database.Channe
 
 func (net *network) forEachDownstream(f func(*downstreamConn)) {
 	for _, dc := range net.user.downstreamConns {
-		if dc.network == nil && !dc.isMultiUpstream {
+		if dc.network == nil {
 			continue
 		}
 		if dc.network != nil && dc.network != net {
@@ -309,7 +309,7 @@ func (net *network) detach(ch *database.Channel) {
 		dc.SendMessage(&irc.Message{
 			Prefix:  dc.prefix(),
 			Command: "PART",
-			Params:  []string{dc.marshalEntity(net, ch.Name), "Detach"},
+			Params:  []string{ch.Name, "Detach"},
 		})
 	})
 }
@@ -336,7 +336,7 @@ func (net *network) attach(ctx context.Context, ch *database.Channel) {
 		dc.SendMessage(&irc.Message{
 			Prefix:  dc.prefix(),
 			Command: "JOIN",
-			Params:  []string{dc.marshalEntity(net, ch.Name)},
+			Params:  []string{ch.Name},
 		})
 
 		if uch != nil {

@@ -15,8 +15,6 @@ behalf of the user to provide extra features.
 
 - Multiple separate users sharing the same bouncer, each with their own
   upstream servers
-- Clients connecting to multiple upstream servers via a single connection to
-  the bouncer
 - Sending the backlog (messages received while the user was disconnected from
   the bouncer), with per-client buffers
 
@@ -29,18 +27,9 @@ channel will be detached instead of being left.
 When all clients are disconnected from the bouncer, the user is automatically
 marked as away.
 
-soju supports two connection modes:
-
-- Single upstream mode: one downstream connection maps to one upstream
-  connection. To enable this mode, connect to the bouncer with the username
-  "<username>/<network>". If the bouncer isn't connected to the upstream
-  server, it will get automatically added. Then channels can be joined and
-  parted as if you were directly connected to the upstream server.
-- Multiple upstream mode: one downstream connection maps to multiple upstream
-  connections. Channels and nicks are suffixed with the network name. To join
-  a channel, you need to use the suffix too: _/join #channel/network_. Same
-  applies to messages sent to users. To enable this mode, connect to the bouncer
-  with the username "<username>/\*".
+To select an upstream network when connecting from a client, use the username
+"<username>/<network>". If the bouncer isn't connected to the upstream server,
+it will get automatically added.
 
 For per-client history to work, clients need to indicate their name. This can
 be done by adding a "@<client>" suffix to the username.

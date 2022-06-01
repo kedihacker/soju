@@ -291,6 +291,18 @@ func (uc *upstreamConn) downstreamByID(id uint64) *downstreamConn {
 	return nil
 }
 
+func (uc *upstreamConn) forwardMessage(msg *irc.Message) {
+	uc.forEachDownstream(func(dc *downstreamConn) {
+		dc.SendMessage(msg)
+	})
+}
+
+func (uc *upstreamConn) forwardMessageWithDownstreamID(id uint64, msg *irc.Message) {
+	uc.forEachDownstreamByID(id, func(dc *downstreamConn) {
+		dc.SendMessage(msg)
+	})
+}
+
 func (uc *upstreamConn) getChannel(name string) (*upstreamChannel, error) {
 	ch := uc.channels.Get(name)
 	if ch == nil {
@@ -838,9 +850,6 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 		uc.updateMonitor()
 
 		uc.forEachDownstream(func(dc *downstreamConn) {
-			if dc.network == nil {
-				return
-			}
 			msgs := xirc.GenerateIsupport(dc.srv.prefix(), dc.nick, downstreamIsupport)
 			for _, msg := range msgs {
 				dc.SendMessage(msg)
@@ -862,13 +871,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			return nil
 		}
 
-		uc.forEachDownstreamByID(downstreamID, func(dc *downstreamConn) {
-			dc.SendMessage(&irc.Message{
-				Prefix:  uc.srv.prefix(),
-				Command: msg.Command,
-				Params:  msg.Params,
-			})
-		})
+		uc.forwardMessageWithDownstreamID(downstreamID, msg)
 	case "BATCH":
 		var tag string
 		if err := parseMessageParams(msg, &tag); err != nil {
@@ -927,9 +930,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 		})
 
 		if !me {
-			uc.forEachDownstream(func(dc *downstreamConn) {
-				dc.SendMessage(dc.marshalMessage(msg, uc.network))
-			})
+			uc.forwardMessage(msg)
 		} else {
 			uc.forEachDownstream(func(dc *downstreamConn) {
 				dc.updateNick()
@@ -952,9 +953,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 				dc.updateRealname()
 			})
 		} else {
-			uc.forEachDownstream(func(dc *downstreamConn) {
-				dc.SendMessage(dc.marshalMessage(msg, uc.network))
-			})
+			uc.forwardMessage(msg)
 		}
 	case "CHGHOST":
 		var newUsername, newHostname string
@@ -977,10 +976,8 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 				dc.updateHost()
 			})
 		} else {
-			uc.forEachDownstream(func(dc *downstreamConn) {
-				// TODO: add fallback with QUIT/JOIN/MODE messages
-				dc.SendMessage(dc.marshalMessage(msg, uc.network))
-			})
+			// TODO: add fallback with QUIT/JOIN/MODE messages
+			uc.forwardMessage(msg)
 		}
 	case "JOIN":
 		var channels string
@@ -1072,9 +1069,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 		})
 
 		if msg.Prefix.Name != uc.nick {
-			uc.forEachDownstream(func(dc *downstreamConn) {
-				dc.SendMessage(dc.marshalMessage(msg, uc.network))
-			})
+			uc.forwardMessage(msg)
 		}
 	case irc.RPL_TOPIC, irc.RPL_NOTOPIC:
 		var name, topic string
@@ -1122,47 +1117,19 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 				return err
 			}
 
-			uc.forEachDownstream(func(dc *downstreamConn) {
-				if dc.upstream() == nil {
-					return
-				}
-
-				dc.SendMessage(msg)
-			})
+			uc.forwardMessage(msg)
 		} else { // channel mode change
 			ch, err := uc.getChannel(name)
 			if err != nil {
 				return err
 			}
 
-			needMarshaling, err := applyChannelModes(ch, modeStr, msg.Params[2:])
+			_, err = applyChannelModes(ch, modeStr, msg.Params[2:])
 			if err != nil {
 				return err
 			}
 
-			uc.appendLog(ch.Name, msg)
-
-			c := uc.network.channels.Get(name)
-			if c == nil || !c.Detached {
-				uc.forEachDownstream(func(dc *downstreamConn) {
-					params := make([]string, len(msg.Params))
-					params[0] = dc.marshalEntity(uc.network, name)
-					params[1] = modeStr
-
-					copy(params[2:], msg.Params[2:])
-					for i, modeParam := range params[2:] {
-						if _, ok := needMarshaling[i]; ok {
-							params[2+i] = dc.marshalEntity(uc.network, modeParam)
-						}
-					}
-
-					dc.SendMessage(&irc.Message{
-						Prefix:  dc.marshalUserPrefix(uc.network, msg.Prefix),
-						Command: "MODE",
-						Params:  params,
-					})
-				})
-			}
+			uc.produce(ch.Name, msg, 0)
 		}
 	case irc.RPL_UMODEIS:
 		if err := parseMessageParams(msg, nil); err != nil {
@@ -1178,13 +1145,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			return err
 		}
 
-		uc.forEachDownstream(func(dc *downstreamConn) {
-			if dc.upstream() == nil {
-				return
-			}
-
-			dc.SendMessage(msg)
-		})
+		uc.forwardMessage(msg)
 	case irc.RPL_CHANNELMODEIS:
 		var channel string
 		if err := parseMessageParams(msg, nil, &channel); err != nil {
@@ -1208,18 +1169,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 
 		c := uc.network.channels.Get(channel)
 		if firstMode && (c == nil || !c.Detached) {
-			modeStr, modeParams := ch.modes.Format()
-
-			uc.forEachDownstream(func(dc *downstreamConn) {
-				params := []string{dc.nick, dc.marshalEntity(uc.network, channel), modeStr}
-				params = append(params, modeParams...)
-
-				dc.SendMessage(&irc.Message{
-					Prefix:  dc.srv.prefix(),
-					Command: irc.RPL_CHANNELMODEIS,
-					Params:  params,
-				})
-			})
+			uc.forwardMessage(msg)
 		}
 	case xirc.RPL_CREATIONTIME:
 		var channel, creationTime string
@@ -1237,13 +1187,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 
 		c := uc.network.channels.Get(channel)
 		if firstCreationTime && (c == nil || !c.Detached) {
-			uc.forEachDownstream(func(dc *downstreamConn) {
-				dc.SendMessage(&irc.Message{
-					Prefix:  dc.srv.prefix(),
-					Command: xirc.RPL_CREATIONTIME,
-					Params:  []string{dc.nick, dc.marshalEntity(uc.network, ch.Name), creationTime},
-				})
-			})
+			uc.forwardMessage(msg)
 		}
 	case xirc.RPL_TOPICWHOTIME:
 		var channel, who, timeStr string
@@ -1266,19 +1210,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 
 		c := uc.network.channels.Get(channel)
 		if firstTopicWhoTime && (c == nil || !c.Detached) {
-			uc.forEachDownstream(func(dc *downstreamConn) {
-				topicWho := dc.marshalUserPrefix(uc.network, ch.TopicWho)
-				dc.SendMessage(&irc.Message{
-					Prefix:  dc.srv.prefix(),
-					Command: xirc.RPL_TOPICWHOTIME,
-					Params: []string{
-						dc.nick,
-						dc.marshalEntity(uc.network, ch.Name),
-						topicWho.String(),
-						timeStr,
-					},
-				})
-			})
+			uc.forwardMessage(msg)
 		}
 	case irc.RPL_LIST:
 		var channel, clients, topic string
@@ -1293,11 +1225,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			return nil
 		}
 
-		dc.SendMessage(&irc.Message{
-			Prefix:  dc.srv.prefix(),
-			Command: irc.RPL_LIST,
-			Params:  []string{dc.nick, dc.marshalEntity(uc.network, channel), clients, topic},
-		})
+		dc.SendMessage(msg)
 	case irc.RPL_LISTEND:
 		dc, cmd := uc.dequeueCommand("LIST")
 		if cmd == nil {
@@ -1306,11 +1234,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			return nil
 		}
 
-		dc.SendMessage(&irc.Message{
-			Prefix:  dc.srv.prefix(),
-			Command: irc.RPL_LISTEND,
-			Params:  []string{dc.nick, "End of /LIST"},
-		})
+		dc.SendMessage(msg)
 	case irc.RPL_NAMREPLY:
 		var name, statusStr, members string
 		if err := parseMessageParams(msg, nil, &statusStr, &name, &members); err != nil {
@@ -1320,21 +1244,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 		ch := uc.channels.Get(name)
 		if ch == nil {
 			// NAMES on a channel we have not joined, forward to downstream
-			uc.forEachDownstreamByID(downstreamID, func(dc *downstreamConn) {
-				channel := dc.marshalEntity(uc.network, name)
-				members := splitSpace(members)
-				for i, member := range members {
-					memberships, nick := uc.parseMembershipPrefix(member)
-					members[i] = formatMemberPrefix(memberships, dc) + dc.marshalEntity(uc.network, nick)
-				}
-				memberStr := strings.Join(members, " ")
-
-				dc.SendMessage(&irc.Message{
-					Prefix:  dc.srv.prefix(),
-					Command: irc.RPL_NAMREPLY,
-					Params:  []string{dc.nick, statusStr, channel, memberStr},
-				})
-			})
+			uc.forwardMessageWithDownstreamID(downstreamID, msg)
 			return nil
 		}
 
@@ -1357,15 +1267,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 		ch := uc.channels.Get(name)
 		if ch == nil {
 			// NAMES on a channel we have not joined, forward to downstream
-			uc.forEachDownstreamByID(downstreamID, func(dc *downstreamConn) {
-				channel := dc.marshalEntity(uc.network, name)
-
-				dc.SendMessage(&irc.Message{
-					Prefix:  dc.srv.prefix(),
-					Command: irc.RPL_ENDOFNAMES,
-					Params:  []string{dc.nick, channel, "End of /NAMES list"},
-				})
-			})
+			uc.forwardMessageWithDownstreamID(downstreamID, msg)
 			return nil
 		}
 
@@ -1380,44 +1282,16 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 				forwardChannel(ctx, dc, ch)
 			})
 		}
-	case irc.RPL_WHOREPLY:
-		var channel, username, host, server, nick, flags, trailing string
-		if err := parseMessageParams(msg, nil, &channel, &username, &host, &server, &nick, &flags, &trailing); err != nil {
-			return err
-		}
-
+	case irc.RPL_WHOREPLY, xirc.RPL_WHOSPCRPL:
 		dc, cmd := uc.currentPendingCommand("WHO")
 		if cmd == nil {
-			return fmt.Errorf("unexpected RPL_WHOREPLY: no matching pending WHO")
+			return fmt.Errorf("unexpected %v: no matching pending WHO", msg.Command)
 		} else if dc == nil {
 			return nil
 		}
 
-		if channel != "*" {
-			channel = dc.marshalEntity(uc.network, channel)
-		}
-		nick = dc.marshalEntity(uc.network, nick)
-		dc.SendMessage(&irc.Message{
-			Prefix:  dc.srv.prefix(),
-			Command: irc.RPL_WHOREPLY,
-			Params:  []string{dc.nick, channel, username, host, server, nick, flags, trailing},
-		})
-	case xirc.RPL_WHOSPCRPL:
-		dc, cmd := uc.currentPendingCommand("WHO")
-		if cmd == nil {
-			return fmt.Errorf("unexpected RPL_WHOSPCRPL: no matching pending WHO")
-		} else if dc == nil {
-			return nil
-		}
-
-		// Only supported in single-upstream mode, so forward as-is
 		dc.SendMessage(msg)
 	case irc.RPL_ENDOFWHO:
-		var name string
-		if err := parseMessageParams(msg, nil, &name); err != nil {
-			return err
-		}
-
 		dc, cmd := uc.dequeueCommand("WHO")
 		if cmd == nil {
 			return fmt.Errorf("unexpected RPL_ENDOFWHO: no matching pending WHO")
@@ -1425,15 +1299,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			return nil
 		}
 
-		mask := "*"
-		if len(cmd.Params) > 0 {
-			mask = cmd.Params[0]
-		}
-		dc.SendMessage(&irc.Message{
-			Prefix:  dc.srv.prefix(),
-			Command: irc.RPL_ENDOFWHO,
-			Params:  []string{dc.nick, mask, "End of /WHO list"},
-		})
+		dc.SendMessage(msg)
 	case xirc.RPL_WHOISCERTFP, xirc.RPL_WHOISREGNICK, irc.RPL_WHOISUSER, irc.RPL_WHOISSERVER, irc.RPL_WHOISOPERATOR, irc.RPL_WHOISIDLE, xirc.RPL_WHOISSPECIAL, xirc.RPL_WHOISACCOUNT, xirc.RPL_WHOISACTUALLY, xirc.RPL_WHOISHOST, xirc.RPL_WHOISMODES, xirc.RPL_WHOISSECURE:
 		var nick string
 		if err := parseMessageParams(msg, nil, &nick); err != nil {
@@ -1447,8 +1313,6 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			return nil
 		}
 
-		msg := msg.Copy()
-		msg.Params[1] = dc.marshalEntity(uc.network, nick)
 		dc.SendMessage(msg)
 	case irc.RPL_WHOISCHANNELS:
 		var nick, channelList string
@@ -1464,11 +1328,9 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			return nil
 		}
 
-		nick = dc.marshalEntity(uc.network, nick)
 		l := make([]string, len(channels))
 		for i, channel := range channels {
 			prefix, channel := uc.parseMembershipPrefix(channel)
-			channel = dc.marshalEntity(uc.network, channel)
 			l[i] = formatMemberPrefix(prefix, dc) + channel
 		}
 		channelList = strings.Join(l, " ")
@@ -1478,11 +1340,6 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			Params:  []string{dc.nick, nick, channelList},
 		})
 	case irc.RPL_ENDOFWHOIS:
-		var nick string
-		if err := parseMessageParams(msg, nil, &nick); err != nil {
-			return err
-		}
-
 		dc, cmd := uc.dequeueCommand("WHOIS")
 		if cmd == nil {
 			return fmt.Errorf("unexpected RPL_ENDOFWHOIS: no matching pending WHOIS")
@@ -1490,12 +1347,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			return nil
 		}
 
-		nick = dc.marshalEntity(uc.network, nick)
-		dc.SendMessage(&irc.Message{
-			Prefix:  dc.srv.prefix(),
-			Command: irc.RPL_ENDOFWHOIS,
-			Params:  []string{dc.nick, nick, "End of /WHOIS list"},
-		})
+		dc.SendMessage(msg)
 	case "INVITE":
 		var nick, channel string
 		if err := parseMessageParams(msg, &nick, &channel); err != nil {
@@ -1508,25 +1360,10 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			if !weAreInvited && !dc.caps.IsEnabled("invite-notify") {
 				return
 			}
-			dc.SendMessage(&irc.Message{
-				Prefix:  dc.marshalUserPrefix(uc.network, msg.Prefix),
-				Command: "INVITE",
-				Params:  []string{dc.marshalEntity(uc.network, nick), dc.marshalEntity(uc.network, channel)},
-			})
+			dc.SendMessage(msg)
 		})
 	case irc.RPL_INVITING:
-		var nick, channel string
-		if err := parseMessageParams(msg, nil, &nick, &channel); err != nil {
-			return err
-		}
-
-		uc.forEachDownstreamByID(downstreamID, func(dc *downstreamConn) {
-			dc.SendMessage(&irc.Message{
-				Prefix:  dc.srv.prefix(),
-				Command: irc.RPL_INVITING,
-				Params:  []string{dc.nick, dc.marshalEntity(uc.network, nick), dc.marshalEntity(uc.network, channel)},
-			})
-		})
+		uc.forwardMessageWithDownstreamID(downstreamID, msg)
 	case irc.RPL_MONONLINE, irc.RPL_MONOFFLINE:
 		var targetsStr string
 		if err := parseMessageParams(msg, nil, &targetsStr); err != nil {
@@ -1591,69 +1428,10 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 				}
 			}
 		})
-	case irc.RPL_AWAY:
-		var nick, reason string
-		if err := parseMessageParams(msg, nil, &nick, &reason); err != nil {
-			return err
-		}
-
-		uc.forEachDownstream(func(dc *downstreamConn) {
-			dc.SendMessage(&irc.Message{
-				Prefix:  dc.srv.prefix(),
-				Command: irc.RPL_AWAY,
-				Params:  []string{dc.nick, dc.marshalEntity(uc.network, nick), reason},
-			})
-		})
-	case "AWAY", "ACCOUNT":
-		uc.forEachDownstream(func(dc *downstreamConn) {
-			dc.SendMessage(&irc.Message{
-				Prefix:  dc.marshalUserPrefix(uc.network, msg.Prefix),
-				Command: msg.Command,
-				Params:  msg.Params,
-			})
-		})
-	case irc.RPL_BANLIST, irc.RPL_INVITELIST, irc.RPL_EXCEPTLIST:
-		var channel, mask string
-		if err := parseMessageParams(msg, nil, &channel, &mask); err != nil {
-			return err
-		}
-		var addNick, addTime string
-		if len(msg.Params) >= 5 {
-			addNick = msg.Params[3]
-			addTime = msg.Params[4]
-		}
-
-		uc.forEachDownstreamByID(downstreamID, func(dc *downstreamConn) {
-			channel := dc.marshalEntity(uc.network, channel)
-
-			var params []string
-			if addNick != "" && addTime != "" {
-				addNick := dc.marshalEntity(uc.network, addNick)
-				params = []string{dc.nick, channel, mask, addNick, addTime}
-			} else {
-				params = []string{dc.nick, channel, mask}
-			}
-
-			dc.SendMessage(&irc.Message{
-				Prefix:  dc.srv.prefix(),
-				Command: msg.Command,
-				Params:  params,
-			})
-		})
-	case irc.RPL_ENDOFBANLIST, irc.RPL_ENDOFINVITELIST, irc.RPL_ENDOFEXCEPTLIST:
-		var channel, trailing string
-		if err := parseMessageParams(msg, nil, &channel, &trailing); err != nil {
-			return err
-		}
-
-		uc.forEachDownstreamByID(downstreamID, func(dc *downstreamConn) {
-			upstreamChannel := dc.marshalEntity(uc.network, channel)
-			dc.SendMessage(&irc.Message{
-				Prefix:  dc.srv.prefix(),
-				Command: msg.Command,
-				Params:  []string{dc.nick, upstreamChannel, trailing},
-			})
-		})
+	case irc.RPL_AWAY, "AWAY", "ACCOUNT":
+		uc.forwardMessage(msg)
+	case irc.RPL_BANLIST, irc.RPL_INVITELIST, irc.RPL_EXCEPTLIST, irc.RPL_ENDOFBANLIST, irc.RPL_ENDOFINVITELIST, irc.RPL_ENDOFEXCEPTLIST:
+		uc.forwardMessageWithDownstreamID(downstreamID, msg)
 	case irc.ERR_NOSUCHNICK:
 		var nick, reason string
 		if err := parseMessageParams(msg, nil, &nick, &reason); err != nil {
@@ -1665,12 +1443,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 		if cmd != nil && cm(cmd.Params[len(cmd.Params)-1]) == cm(nick) {
 			uc.dequeueCommand("WHOIS")
 			if dc != nil {
-				nick = dc.marshalEntity(uc.network, nick)
-				dc.SendMessage(&irc.Message{
-					Prefix:  uc.srv.prefix(),
-					Command: msg.Command,
-					Params:  []string{dc.nick, nick, reason},
-				})
+				dc.SendMessage(msg)
 			}
 		}
 	case irc.ERR_UNKNOWNCOMMAND, irc.RPL_TRYAGAIN:
@@ -1683,13 +1456,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			downstreamID = dc.id
 		}
 
-		uc.forEachDownstreamByID(downstreamID, func(dc *downstreamConn) {
-			dc.SendMessage(&irc.Message{
-				Prefix:  uc.srv.prefix(),
-				Command: msg.Command,
-				Params:  []string{dc.nick, command, reason},
-			})
-		})
+		uc.forwardMessageWithDownstreamID(downstreamID, msg)
 	case "FAIL":
 		var command, code string
 		if err := parseMessageParams(msg, &command, &code); err != nil {
@@ -1704,9 +1471,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			downstreamID = dc.id
 		}
 
-		uc.forEachDownstreamByID(downstreamID, func(dc *downstreamConn) {
-			dc.SendMessage(msg)
-		})
+		uc.forwardMessageWithDownstreamID(downstreamID, msg)
 	case "ACK":
 		// Ignore
 	case irc.RPL_NOWAWAY, irc.RPL_UNAWAY:
@@ -1726,13 +1491,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			return nil
 		}
 
-		uc.forEachDownstreamByID(downstreamID, func(dc *downstreamConn) {
-			dc.SendMessage(&irc.Message{
-				Prefix:  uc.srv.prefix(),
-				Command: msg.Command,
-				Params:  msg.Params,
-			})
-		})
+		uc.forwardMessageWithDownstreamID(downstreamID, msg)
 	case irc.RPL_LISTSTART:
 		// Ignore
 	case "ERROR":
@@ -1763,23 +1522,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 		fallthrough
 	default:
 		uc.logger.Printf("unhandled message: %v", msg)
-
-		uc.forEachDownstreamByID(downstreamID, func(dc *downstreamConn) {
-			// best effort marshaling for unknown messages, replies and errors:
-			// most numerics start with the user nick, marshal it if that's the case
-			// otherwise, conservately keep the params without marshaling
-			params := msg.Params
-			if _, err := strconv.Atoi(msg.Command); err == nil { // numeric
-				if len(msg.Params) > 0 && isOurNick(uc.network, msg.Params[0]) {
-					params[0] = dc.nick
-				}
-			}
-			dc.SendMessage(&irc.Message{
-				Prefix:  uc.srv.prefix(),
-				Command: msg.Command,
-				Params:  params,
-			})
-		})
+		uc.forwardMessageWithDownstreamID(downstreamID, msg)
 	}
 	return nil
 }
@@ -2112,7 +1855,7 @@ func (uc *upstreamConn) produce(target string, msg *irc.Message, originID uint64
 
 	uc.forEachDownstream(func(dc *downstreamConn) {
 		if !detached && (dc.id != originID || dc.caps.IsEnabled("echo-message")) {
-			dc.sendMessageWithID(dc.marshalMessage(msg, uc.network), msgID)
+			dc.sendMessageWithID(msg, msgID)
 		} else {
 			dc.advanceMessageWithID(msg, msgID)
 		}
