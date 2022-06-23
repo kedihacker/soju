@@ -107,6 +107,16 @@ CREATE TABLE WebPushSubscription (
 	FOREIGN KEY(network) REFERENCES Network(id),
 	UNIQUE(network, endpoint)
 );
+
+CREATE TABLE Message (
+	id INTEGER PRIMARY KEY,
+	network INTEGER NOT NULL,
+	target TEXT,
+	raw TEXT NOT NULL,
+	command TEXT NOT NULL,
+	time TEXT NOT NULL,
+	FOREIGN KEY(network) REFERENCES Network(id)
+);
 `
 
 var sqliteMigrations = []string{

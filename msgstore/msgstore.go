@@ -84,12 +84,20 @@ type RenameNetworkStore interface {
 	RenameNetwork(oldNet, newNet *database.Network) error
 }
 
+// Database is a database implementing a message store.
+type Database interface {
+	database.Database
+
+	UserMessageStore(userID int64) Store
+}
+
 type msgIDType uint
 
 const (
 	msgIDNone msgIDType = iota
 	msgIDMemory
 	msgIDFS
+	msgIDDB
 )
 
 const msgIDVersion uint = 0
