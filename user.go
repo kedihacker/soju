@@ -75,6 +75,10 @@ type eventUserUpdate struct {
 	done     chan error
 }
 
+type eventRegainNick struct {
+	uc *upstreamConn
+}
+
 type deliveredClientMap map[string]string // client name -> msg ID
 
 type deliveredStore struct {

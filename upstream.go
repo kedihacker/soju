@@ -869,6 +869,15 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			uc.nickCM = uc.network.casemap(uc.nick)
 		}
 
+		// If we don't have the nick we want, and the server doesn't support
+		// MONITOR, setup a timer to try to regain our nick periodically.
+		wantNick := database.GetNick(&uc.user.User, &uc.network.Network)
+		wantNickCM := uc.network.casemap(wantNick)
+		_, hasMonitor := uc.isupport["MONITOR"]
+		if !hasMonitor && uc.nickCM != wantNickCM {
+
+		}
+
 		if !uc.gotMotd {
 			// Ignore the initial MOTD upon connection, but forward
 			// subsequent MOTD messages downstream
