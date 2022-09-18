@@ -10,6 +10,7 @@ import (
 	"gopkg.in/irc.v3"
 
 	"git.sr.ht/~emersion/soju/database"
+	"git.sr.ht/~emersion/soju/strintern"
 	"git.sr.ht/~emersion/soju/xirc"
 )
 
@@ -338,11 +339,11 @@ func (cm *casemapMap) get(name string) interface{} {
 }
 
 func (cm *casemapMap) set(name string, value interface{}) {
-	nameCM := cm.casemap(name)
+	nameCM := strintern.LoadOrStore(cm.casemap(name))
 	entry, ok := cm.m[nameCM]
 	if !ok {
 		cm.m[nameCM] = casemapEntry{
-			originalKey: name,
+			originalKey: strintern.LoadOrStore(name),
 			value:       value,
 		}
 		return
@@ -359,7 +360,7 @@ func (cm *casemapMap) SetCasemapping(newCasemap casemapping) {
 	cm.casemap = newCasemap
 	m := make(map[string]casemapEntry, len(cm.m))
 	for _, entry := range cm.m {
-		m[cm.casemap(entry.originalKey)] = entry
+		m[strintern.LoadOrStore(cm.casemap(entry.originalKey))] = entry
 	}
 	cm.m = m
 }
