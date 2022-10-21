@@ -1821,6 +1821,11 @@ func (dc *downstreamConn) handleMessageRegistered(ctx context.Context, msg *irc.
 			// when reconnecting to the bouncer. We don't want to flood the
 			// upstream connection with these.
 			if !uc.channels.Has(name) {
+				uc.pendingJoins = append(uc.pendingJoins, database.Channel{
+					Name: name,
+					Key:  key,
+				})
+
 				params := []string{name}
 				if key != "" {
 					params = append(params, key)
@@ -1836,18 +1841,14 @@ func (dc *downstreamConn) handleMessageRegistered(ctx context.Context, msg *irc.
 				// Don't clear the channel key if there's one set
 				// TODO: add a way to unset the channel key
 				if key != "" {
-					ch.Key = key
+					record := *ch
+					record.Key = key
+					if err := dc.srv.db.StoreChannel(ctx, uc.network.ID, &record); err != nil {
+						dc.logger.Printf("failed to update channel key %q: %v", name, err)
+					}
+					*ch = record
 				}
 				uc.network.attach(ctx, ch)
-			} else {
-				ch = &database.Channel{
-					Name: name,
-					Key:  key,
-				}
-				uc.network.channels.Set(ch)
-			}
-			if err := dc.srv.db.StoreChannel(ctx, uc.network.ID, ch); err != nil {
-				dc.logger.Printf("failed to create or update channel %q: %v", name, err)
 			}
 		}
 	case "PART":

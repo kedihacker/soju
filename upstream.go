@@ -154,6 +154,8 @@ type upstreamConn struct {
 	// been sent yet.
 	pendingCmds map[string][]pendingUpstreamCommand
 
+	pendingJoins []database.Channel
+
 	pendingRegainNick string
 	regainNickTimer   *time.Timer
 	regainNickBackoff *backoffer
@@ -432,6 +434,16 @@ func (uc *upstreamConn) cancelPendingCommandsByDownstreamID(downstreamID uint64)
 			}
 		}
 	}
+}
+
+func (uc *upstreamConn) dequeuePendingJoin(name string) *database.Channel {
+	for i, record := range uc.pendingJoins {
+		if uc.network.equalCasemap(name, record.Name) {
+			uc.pendingJoins = append(uc.pendingJoins[:i], uc.pendingJoins[i+1:]...)
+			return &record
+		}
+	}
+	return nil
 }
 
 func (uc *upstreamConn) parseMembershipPrefix(s string) (ms xirc.MembershipSet, nick string) {
@@ -1031,6 +1043,14 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 		for _, ch := range strings.Split(channels, ",") {
 			if uc.isOurNick(msg.Prefix.Name) {
 				uc.logger.Printf("joined channel %q", ch)
+
+				if record := uc.dequeuePendingJoin(ch); record != nil {
+					uc.network.channels.Set(record)
+					if err := uc.srv.db.StoreChannel(ctx, uc.network.ID, record); err != nil {
+						uc.logger.Printf("failed to create channel %q: %v", record.Name, err)
+					}
+				}
+
 				members := membershipsCasemapMap{newCasemapMap()}
 				members.casemap = uc.network.casemap
 				uc.channels.Set(&upstreamChannel{
@@ -1038,6 +1058,7 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 					conn:    uc,
 					Members: members,
 				})
+
 				uc.updateChannelAutoDetach(ch)
 
 				uc.SendMessage(ctx, &irc.Message{
