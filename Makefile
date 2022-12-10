@@ -1,7 +1,7 @@
 GO ?= go
 RM ?= rm
 SCDOC ?= scdoc
-GOFLAGS ?=
+GOFLAGS ?= --tags sqlite_fts5
 PREFIX ?= /usr/local
 BINDIR ?= bin
 MANDIR ?= share/man

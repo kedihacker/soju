@@ -124,11 +124,13 @@ func parse(cfg scfg.Block) (*Server, error) {
 				return nil, err
 			}
 			switch srv.MsgStore.Driver {
-			case "memory":
-				srv.MsgStore.Source = ""
+			case "memory", "db":
 			case "fs":
 				if err := d.ParseParams(nil, &srv.MsgStore.Source); err != nil {
 					return nil, err
+				}
+				if srv.MsgStore.Source == "" {
+					srv.MsgStore.Driver = "memory"
 				}
 			default:
 				return nil, fmt.Errorf("directive %q: unknown driver %q", d.Name, srv.MsgStore.Driver)
