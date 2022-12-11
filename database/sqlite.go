@@ -332,6 +332,7 @@ var sqliteMigrations = []string{
 
 type SqliteDB struct {
 	db *sql.DB
+	tx *sql.Tx
 }
 
 func OpenSqliteDB(source string) (Database, error) {
@@ -400,6 +401,19 @@ func (db *SqliteDB) upgrade() error {
 	}
 
 	return tx.Commit()
+}
+
+func (db *SqliteDB) Begin() {
+	if db.tx == nil {
+		db.tx, _ = db.db.Begin()
+	}
+}
+
+func (db *SqliteDB) End() {
+	if db.tx != nil {
+		db.tx.Commit()
+		db.tx = nil
+	}
 }
 
 func (db *SqliteDB) RegisterMetrics(r prometheus.Registerer) error {
@@ -1103,7 +1117,7 @@ func (db *SqliteDB) StoreMessage(ctx context.Context, networkID int64, name stri
 		}
 	}
 
-	res, err := db.db.ExecContext(ctx, `
+	res, err := db.tx.ExecContext(ctx, `
 		INSERT INTO MessageTarget(network, target)
 		VALUES (:network, :target)
 		ON CONFLICT DO NOTHING`,
@@ -1114,7 +1128,7 @@ func (db *SqliteDB) StoreMessage(ctx context.Context, networkID int64, name stri
 		return 0, err
 	}
 
-	res, err = db.db.ExecContext(ctx, `
+	res, err = db.tx.ExecContext(ctx, `
 		INSERT INTO Message(target, raw, time, sender, text)
 		SELECT id, :raw, :time, :sender, :text
 		FROM MessageTarget as t

@@ -100,6 +100,10 @@ func main() {
 				}
 				sort.Strings(entryNames)
 
+				if d, ok := db.(*database.SqliteDB); ok {
+					d.Begin()
+				}
+
 				for _, entryName := range entryNames {
 					entryPath := filepath.Join(targetPath, entryName)
 
@@ -131,6 +135,10 @@ func main() {
 						log.Fatalf("unable to parse entry: %s: %v", entryPath, sc.Err())
 					}
 					entry.Close()
+				}
+
+				if d, ok := db.(*database.SqliteDB); ok {
+					d.End()
 				}
 			}
 		}
