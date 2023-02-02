@@ -228,6 +228,7 @@ var permanentDownstreamCaps = map[string]string{
 	"setname":       "",
 
 	"draft/read-marker": "",
+	"draft/pre-away":    "",
 
 	"soju.im/bouncer-networks":        "",
 	"soju.im/bouncer-networks-notify": "",
@@ -741,6 +742,14 @@ func (dc *downstreamConn) handleMessageUnregistered(ctx context.Context, msg *ir
 				Params:  []string{"BOUNCER", "UNKNOWN_COMMAND", subcommand, "Unknown subcommand"},
 			}}
 		}
+	case "AWAY":
+		if len(msg.Params) > 0 {
+			dc.away = &msg.Params[0]
+		} else {
+			dc.away = nil
+		}
+
+		dc.SendMessage(ctx, generateAwayReply(dc.away != nil))
 	default:
 		dc.logger.Printf("unhandled message: %v", msg)
 		return newUnknownCommandError(msg.Command)
@@ -2575,16 +2584,7 @@ func (dc *downstreamConn) handleMessageRegistered(ctx context.Context, msg *irc.
 			dc.away = nil
 		}
 
-		cmd := irc.RPL_NOWAWAY
-		desc := "You have been marked as being away"
-		if dc.away == nil {
-			cmd = irc.RPL_UNAWAY
-			desc = "You are no longer marked as being away"
-		}
-		dc.SendMessage(ctx, &irc.Message{
-			Command: cmd,
-			Params:  []string{dc.nick, desc},
-		})
+		dc.SendMessage(ctx, generateAwayReply(dc.away != nil))
 
 		uc := dc.upstream()
 		if uc != nil {
