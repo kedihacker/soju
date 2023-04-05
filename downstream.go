@@ -774,42 +774,13 @@ func (dc *downstreamConn) handleCap(msg *irc.Message) error {
 			}
 		}
 
-		caps := make([]string, 0, len(dc.caps.Available))
-		for k, v := range dc.caps.Available {
-			if dc.capVersion >= 302 && v != "" {
-				caps = append(caps, k+"="+v)
-			} else {
-				caps = append(caps, k)
-			}
-		}
-
-		// TODO: multi-line replies
-		dc.SendMessage(&irc.Message{
-			Prefix:  dc.srv.prefix(),
-			Command: "CAP",
-			Params:  []string{dc.nick, "LS", strings.Join(caps, " ")},
-		})
-
-		if dc.capVersion >= 302 {
-			// CAP version 302 implicitly enables cap-notify
-			dc.caps.SetEnabled("cap-notify", true)
-		}
+		dc.SendMessage(handleCapLs(dc.caps, dc.capVersion))
 
 		if !dc.registered {
 			dc.registration.negotiatingCaps = true
 		}
 	case "LIST":
-		var caps []string
-		for name := range dc.caps.Enabled {
-			caps = append(caps, name)
-		}
-
-		// TODO: multi-line replies
-		dc.SendMessage(&irc.Message{
-			Prefix:  dc.srv.prefix(),
-			Command: "CAP",
-			Params:  []string{dc.nick, "LIST", strings.Join(caps, " ")},
-		})
+		dc.SendMessage(handleCapList(dc.caps))
 	case "REQ":
 		if len(args) == 0 {
 			return ircError{&irc.Message{
@@ -3462,5 +3433,106 @@ func sendNames(dc *downstreamConn, ch *upstreamChannel) {
 	msgs := xirc.GenerateNamesReply(dc.srv.prefix(), dc.nick, ch.Name, ch.Status, members)
 	for _, msg := range msgs {
 		dc.SendMessage(msg)
+	}
+}
+
+func handleCapLs(cr *xirc.CapRegistry, capVersion int) *irc.Message {
+	caps := make([]string, 0, len(cr.Available))
+	for k, v := range cr.Available {
+		if capVersion >= 302 && v != "" {
+			caps = append(caps, k+"="+v)
+		} else {
+			caps = append(caps, k)
+		}
+	}
+
+	if capVersion >= 302 {
+		// CAP version 302 implicitly enables cap-notify
+		cr.SetEnabled("cap-notify", true)
+	}
+
+	// TODO: multi-line replies
+	return &irc.Message{
+		Prefix:  dc.srv.prefix(),
+		Command: "CAP",
+		Params:  []string{dc.nick, "LS", strings.Join(caps, " ")},
+	}
+}
+
+func handleCapList(cr *xirc.CapRegistry) *irc.Message {
+	var caps []string
+	for name := range cr.Enabled {
+		caps = append(caps, name)
+	}
+
+	// TODO: multi-line replies
+	return &irc.Message{
+		Prefix:  dc.srv.prefix(),
+		Command: "CAP",
+		Params:  []string{dc.nick, "LIST", strings.Join(caps, " ")},
+	}
+}
+
+func handleCapReq() (*irc.Message, error) {
+	if len(args) == 0 {
+		return ircError{&irc.Message{
+			Command: xirc.ERR_INVALIDCAPCMD,
+			Params:  []string{dc.nick, cmd, "Missing argument in CAP REQ command"},
+		}}
+	}
+
+	caps := strings.Fields(args[0])
+	ack := true
+	m := make(map[string]bool, len(caps))
+	for _, name := range caps {
+		name = strings.ToLower(name)
+		enable := !strings.HasPrefix(name, "-")
+		if !enable {
+			name = strings.TrimPrefix(name, "-")
+		}
+
+		if enable == dc.caps.IsEnabled(name) {
+			continue
+		}
+
+		if !dc.caps.IsAvailable(name) {
+			ack = false
+			break
+		}
+
+		if name == "cap-notify" && dc.capVersion >= 302 && !enable {
+			// cap-notify cannot be disabled with CAP version 302
+			ack = false
+			break
+		}
+
+		if name == "soju.im/account-required" {
+			// account-required is an informational cap
+			ack = false
+			break
+		}
+
+		m[name] = enable
+	}
+
+	// Atomically ack the whole capability set
+	if ack {
+		for name, enable := range m {
+			dc.caps.SetEnabled(name, enable)
+		}
+	}
+
+	reply := "NAK"
+	if ack {
+		reply = "ACK"
+	}
+	dc.SendMessage(&irc.Message{
+		Prefix:  dc.srv.prefix(),
+		Command: "CAP",
+		Params:  []string{dc.nick, reply, args[0]},
+	})
+
+	if !dc.registered {
+		dc.registration.negotiatingCaps = true
 	}
 }
