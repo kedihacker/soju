@@ -125,10 +125,21 @@ func splitWords(s string) ([]string, error) {
 }
 
 func handleServicePRIVMSG(ctx *serviceContext, text string) error {
+	var tail string
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		tail = text[i+1:]
+		text = text[:i]
+	}
+
 	words, err := splitWords(text)
 	if err != nil {
 		return fmt.Errorf(`failed to parse command: %v`, err)
 	}
+
+	if tail != "" {
+		words = append(words, tail)
+	}
+
 	return handleServiceCommand(ctx, words)
 }
 

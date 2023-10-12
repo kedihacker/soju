@@ -550,6 +550,11 @@ func (s *Server) HandleAdmin(ic ircConn) {
 		})
 		return
 	}
+
+	var (
+		pendingBatchRef  string
+		pendingBatchText string
+	)
 	for {
 		msg, err := c.ReadMessage()
 		if errors.Is(err, io.EOF) {
@@ -559,42 +564,66 @@ func (s *Server) HandleAdmin(ic ircConn) {
 			break
 		}
 		switch msg.Command {
-		case "BOUNCERSERV":
+		case "BATCH":
 			if len(msg.Params) < 1 {
-				c.SendMessage(ctx, &irc.Message{
-					Command: irc.ERR_NEEDMOREPARAMS,
-					Params: []string{
-						"*",
-						msg.Command,
-						"Not enough parameters",
-					},
-				})
+				c.SendMessage(ctx, newNeedMoreParamsError(msg.Command).Message)
 				break
 			}
-			err := handleServicePRIVMSG(&serviceContext{
-				Context: ctx,
-				srv:     s,
-				admin:   true,
-				print: func(text string) {
+			if pendingBatchRef != "" {
+				if msg.Params[0] == "-"+pendingBatchRef {
+					s.handleAdminCommand(ctx, c, pendingBatchText)
+					pendingBatchRef = ""
+					pendingBatchText = ""
+				} else {
 					c.SendMessage(ctx, &irc.Message{
 						Prefix:  s.prefix(),
-						Command: "PRIVMSG",
-						Params:  []string{"*", text},
+						Command: "FAIL",
+						Params:  []string{msg.Command, "*", "Expected end of batch"},
 					})
-				},
-			}, msg.Params[0])
-			if err != nil {
+				}
+				break
+			}
+			if len(msg.Params) < 2 {
+				c.SendMessage(ctx, newNeedMoreParamsError(msg.Command).Message)
+				break
+			}
+			if !strings.HasPrefix(msg.Params[0], "+") || len(msg.Params[0]) < 2 {
 				c.SendMessage(ctx, &irc.Message{
 					Prefix:  s.prefix(),
 					Command: "FAIL",
-					Params:  []string{msg.Command, err.Error()},
+					Params:  []string{msg.Command, "*", "Invalid start of batch"},
 				})
-			} else {
+				break
+			}
+			if msg.Params[1] != "soju.im/bouncerserv" {
 				c.SendMessage(ctx, &irc.Message{
 					Prefix:  s.prefix(),
-					Command: msg.Command,
-					Params:  []string{"OK"},
+					Command: "FAIL",
+					Params:  []string{msg.Command, "*", "Unsupported batch type"},
 				})
+			}
+			pendingBatchRef = msg.Params[0][1:]
+		case "BOUNCERSERV":
+			if len(msg.Params) < 1 {
+				c.SendMessage(ctx, newNeedMoreParamsError(msg.Command).Message)
+				break
+			}
+			text := msg.Params[0]
+			if batchRef, ok := msg.Tags["batch"]; ok {
+				if batchRef != pendingBatchRef {
+					c.SendMessage(ctx, &irc.Message{
+						Prefix:  s.prefix(),
+						Command: "FAIL",
+						Params:  []string{msg.Command, "*", "Invalid batch tag"},
+					})
+				} else {
+					if text != "" {
+						pendingBatchText += "\n"
+					}
+					pendingBatchText += text
+				}
+			} else {
+				s.handleAdminCommand(ctx, c, text)
 			}
 		default:
 			c.SendMessage(ctx, &irc.Message{
@@ -607,6 +636,34 @@ func (s *Server) HandleAdmin(ic ircConn) {
 				},
 			})
 		}
+	}
+}
+
+func (s *Server) handleAdminCommand(ctx context.Context, c *conn, text string) {
+	err := handleServicePRIVMSG(&serviceContext{
+		Context: ctx,
+		srv:     s,
+		admin:   true,
+		print: func(text string) {
+			c.SendMessage(ctx, &irc.Message{
+				Prefix:  s.prefix(),
+				Command: "PRIVMSG",
+				Params:  []string{"*", text},
+			})
+		},
+	}, text)
+	if err != nil {
+		c.SendMessage(ctx, &irc.Message{
+			Prefix:  s.prefix(),
+			Command: "FAIL",
+			Params:  []string{"BOUNCERSERV", err.Error()},
+		})
+	} else {
+		c.SendMessage(ctx, &irc.Message{
+			Prefix:  s.prefix(),
+			Command: "BOUNCERSERV",
+			Params:  []string{"OK"},
+		})
 	}
 }
 
