@@ -26,6 +26,7 @@ func TestIsHighlight(t *testing.T) {
 		{"endURL", "check out my website: https://SojuUser.example", false},
 		{"parenthesizedURL", "see my website (https://SojuUser.example)", false},
 		{"afterURL", "see https://SojuUser.example (cc SojuUser)", true},
+		{"twiceInURL", "https://SojuUser.example/bar/SojuUser/baz", false},
 	}
 
 	for _, tc := range testCases {
